@@ -26,6 +26,7 @@ provides_tools:
   - phone_geofence
   - phone_calendar
   - phone_contacts
+  - phone_messages
   - phone_health
   - phone_call_me
 config_schema:

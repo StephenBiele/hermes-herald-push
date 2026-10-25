@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Callable, Dict, List, Optional
 
 from .store import DEVICE_ID_RE, Store, _write_private
+from .messages import MessageHistory
 
 log = logging.getLogger(__name__)
 
@@ -203,6 +204,18 @@ TOOLS: Dict[str, tuple] = {
             "query": {"type": "string", "maxLength": 100},
             "limit": {"type": "integer", "minimum": 1, "maximum": 20},
         }, ["query"]), READ_TIMEOUT, "👤"),
+    "phone_messages": (_schema(
+        "phone_messages",
+        "Search SMS/MMS and provider-visible RCS live on the paired phone, retrieve the explicitly incomplete "
+        "retained offline snapshot, or open a reviewable draft in the messaging app. Never sends a message.",
+        {
+            "action": {"type": "string", "enum": ["search", "history", "draft"]},
+            "query": {"type": "string", "maxLength": 100},
+            "thread_id": {"type": "string", "maxLength": 64},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 50},
+            "recipient": {"type": "string", "maxLength": 100},
+            "text": {"type": "string", "maxLength": 2000},
+        }, ["action"]), READ_TIMEOUT, "💬"),
     "phone_health": (_schema(
         "phone_health",
         "The user's health data from the phone's Health Connect: steps, sleep sessions or heart rate over a "
@@ -272,6 +285,7 @@ class Phones:
         self.root = store.root / "phone"
         self.wake = wake
         self.clock = clock
+        self.messages = MessageHistory(self.root, clock)
 
     # ── which phones offer what ─────────────────────────────────────────────
 
@@ -323,6 +337,8 @@ class Phones:
         for request in self.pending(device_id):
             if request["tool"] not in kept:
                 self.answer(device_id, request["id"], None, "The user turned this tool off on the phone.")
+        if "phone_messages" not in kept:
+            self.messages.forget(device_id)
         return kept
 
     # ── which phone a call goes to ──────────────────────────────────────────
@@ -395,7 +411,14 @@ class Phones:
         _refresh_tool_list()
         for request in self.pending(device_id):
             self.answer(device_id, request["id"], None, "The user removed that phone.")
+        self.messages.forget(device_id)
         return True
+
+    def sync_messages(self, device_id: str, days: object, messages: object) -> int:
+        """Authenticated by the command handler; enforce the switch again even for a direct caller."""
+        if "phone_messages" not in self._phones().get(device_id, {}).get("tools", []):
+            raise ValueError("Messages is off on this phone")
+        return self.messages.sync(device_id, days, messages)
 
     def route(self, tool: str, sid: str = "") -> tuple:
         """``(phone, refusal)`` for a call of [tool] from a turn on chat connection [sid]:
@@ -444,6 +467,12 @@ class Phones:
         device_id, refusal = self.route(tool, sid)
         if device_id is None:
             return _error(refusal or "No phone offers this tool any more.")
+        if tool == "phone_messages" and args.get("action") == "history":
+            try:
+                return json.dumps(self.messages.search(device_id, args.get("query", ""), args.get("limit", 20),
+                                                       args.get("thread_id", "")), ensure_ascii=False)
+            except ValueError as exc:
+                return _error(str(exc))
         timeout = TOOLS[tool][1]
         request_id = uuid.uuid4().hex
         now = self.clock()

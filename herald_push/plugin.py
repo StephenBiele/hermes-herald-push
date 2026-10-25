@@ -36,6 +36,8 @@ def wake_message(request: dict) -> dict:
 # One watcher per process, however many profiles load the plugin.
 _watcher_lock = threading.Lock()
 _watcher: Watcher | None = None
+_purger: threading.Event | None = None
+_purger_thread: threading.Thread | None = None
 
 
 def _root() -> Path:
@@ -49,7 +51,7 @@ def _root() -> Path:
 
 
 def register(ctx) -> None:
-    global _watcher
+    global _watcher, _purger, _purger_thread
     root = _root()
     store = Store(root / "plugin-data" / "herald-push")
 
@@ -78,14 +80,29 @@ def register(ctx) -> None:
             # One watcher for every profile; each bot's own "Send notifications" setting is read as it polls.
             _watcher = Watcher(root, store)
             _watcher.start()
+            # Expiry must happen even if no phone reconnects and nobody searches history.
+            _purger = threading.Event()
+            stop_event = _purger
+            def purge_loop() -> None:
+                while not stop_event.wait(3600):
+                    try:
+                        phones.messages.purge()
+                    except Exception:
+                        log.exception("herald-push: message expiry failed")
+            _purger_thread = threading.Thread(target=purge_loop, name="herald-push-message-expiry", daemon=True)
+            _purger_thread.start()
             log.info("herald-push: watching Bot Chats and cron runs")
             started = _watcher
 
             def stop() -> None:
-                global _watcher
+                global _watcher, _purger, _purger_thread
                 with _watcher_lock:
                     if _watcher is started:
                         _watcher.stop()
                         _watcher = None
+                        if _purger is not None:
+                            _purger.set()
+                            _purger = None
+                        _purger_thread = None
 
             ctx.on_unload(stop)

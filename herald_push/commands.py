@@ -24,7 +24,7 @@ MAX_ARG = 8192
 # A phone tool's answer (a calendar, a contact list) is bigger than anything else sent here.
 MAX_ANSWER_ARG = 64000
 USAGE = ("usage: /herald-push info | register <json> | unregister <device_id> | test <device_id> | "
-         "phone tools <json> | phone pending <json> | phone answer <json> | phone here <json> | "
+         "phone tools <json> | phone pending <json> | phone answer <json> | phone sync <json> | phone here <json> | "
          "phone list <json> | phone order <json> | phone remove <json> | cron follow|following|inbox|read <json>")
 
 
@@ -72,6 +72,12 @@ def phone_command(phones: Phones, raw: str, reply: Callable[..., str]) -> str:
         return reply(ok=True, tools=kept)
     if not phones.verify(device_id, key):
         return reply(ok=False, error="unknown phone")
+    if op == "sync":
+        try:
+            count = phones.sync_messages(device_id, data.get("retention_days"), data.get("messages"))
+        except ValueError as exc:
+            return reply(ok=False, error=str(exc))
+        return reply(ok=True, count=count)
     if op == "here":
         sid = data.get("sid")
         if not isinstance(sid, str):
@@ -150,7 +156,7 @@ def make_handler(store: Store, version: str, watching: Callable[[], bool],
             if not trusted():
                 return reply(ok=False, error="Herald push can only be managed from the Herald app or the dashboard.")
             raw = (raw or "").strip()
-            if len(raw) > (MAX_ANSWER_ARG if raw.startswith("phone answer ") else MAX_ARG):
+            if len(raw) > (MAX_ANSWER_ARG if raw.startswith(("phone answer ", "phone sync ")) else MAX_ARG):
                 return reply(ok=False, error="too long")
             op, _, rest = raw.partition(" ")
             rest = rest.strip()
